@@ -1,0 +1,6 @@
+{
+  "name": "DevGuard AI",
+  "description": "Expert Senior Java Tech Lead and Security Auditor that reviews code and git diffs for security vulnerabilities, performance bottlenecks, and quality issues.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
