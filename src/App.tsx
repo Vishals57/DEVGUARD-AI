@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { 
   ShieldAlert, 
   Gauge, 
@@ -24,11 +24,12 @@ import {
   HelpCircle,
   MessageSquare,
   Lock,
-  Cpu
+  Cpu,
+  History
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { SAMPLE_CODES } from "./samples";
-import { AuditReport, Issue, ChatMessage } from "./types";
+import { AuditReport, Issue, ChatMessage, SavedAuditSession } from "./types";
 
 export default function App() {
   // Editor State
@@ -58,8 +59,166 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState<boolean>(false);
   const chatBottomRef = useRef<HTMLDivElement>(null);
 
+  // Recent Audits State
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
+  const [recentAudits, setRecentAudits] = useState<SavedAuditSession[]>([]);
+  const [loadedSessionId, setLoadedSessionId] = useState<string | null>(null);
+
+  // Load recent audits on mount
+  useEffect(() => {
+    try {
+      const existingJson = localStorage.getItem("devguard_recent_audits");
+      if (existingJson) {
+        setRecentAudits(JSON.parse(existingJson));
+      }
+    } catch (err) {
+      console.warn("Failed to load recent audits from localStorage:", err);
+    }
+  }, []);
+
   // API Availability Check
   const [backendConfigured, setBackendConfigured] = useState<boolean>(true);
+
+  // Extract a readable name or preview for the audit session
+  const getAuditTitle = (codeToAnalyze: string, isDiffMode: boolean, parsedReport?: AuditReport) => {
+    const matchedSample = SAMPLE_CODES.find((s) => s.content.trim() === codeToAnalyze.trim());
+    if (matchedSample) return matchedSample.name;
+
+    if (isDiffMode) {
+      const gitFileRegex = /diff --git a\/(.*?) b\//;
+      const match = codeToAnalyze.match(gitFileRegex);
+      if (match && match[1]) {
+        return `Diff: ${match[1].split("/").pop()}`;
+      }
+    }
+
+    const classRegex = /(?:class|interface|enum)\s+(\w+)/;
+    const classMatch = codeToAnalyze.match(classRegex);
+    if (classMatch && classMatch[1]) {
+      return `${classMatch[1]}.java`;
+    }
+
+    if (parsedReport && parsedReport.issues && parsedReport.issues.length > 0) {
+      const firstPath = parsedReport.issues[0].filePath;
+      if (firstPath) {
+        return firstPath.split("/").pop() || firstPath;
+      }
+    }
+
+    return "Custom Code Snippet";
+  };
+
+  // Save successful audit session to localStorage (max 5)
+  const saveAuditSession = (
+    codeStr: string,
+    isDiffMode: boolean,
+    reportData: AuditReport,
+    initialChat: ChatMessage[],
+    generatedId: string
+  ) => {
+    try {
+      const title = getAuditTitle(codeStr, isDiffMode, reportData);
+      const newSession: SavedAuditSession = {
+        id: generatedId,
+        timestamp: new Date().toLocaleString("en-US", {
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: true,
+        }),
+        title,
+        code: codeStr,
+        isDiff: isDiffMode,
+        report: reportData,
+        chatMessages: initialChat,
+      };
+
+      const existingJson = localStorage.getItem("devguard_recent_audits");
+      let sessions: SavedAuditSession[] = [];
+      if (existingJson) {
+        sessions = JSON.parse(existingJson);
+      }
+
+      // Filter out any older session with the exact same code to avoid duplicate entries
+      sessions = sessions.filter((s) => s.code.trim() !== codeStr.trim());
+
+      sessions.unshift(newSession);
+
+      if (sessions.length > 5) {
+        sessions = sessions.slice(0, 5);
+      }
+
+      localStorage.setItem("devguard_recent_audits", JSON.stringify(sessions));
+      setRecentAudits(sessions);
+    } catch (err) {
+      console.warn("Failed to save audit to localStorage:", err);
+    }
+  };
+
+  // Update saved session chats when conversation continues
+  const updateSavedSessionChat = (sessionId: string, updatedMessages: ChatMessage[]) => {
+    try {
+      const existingJson = localStorage.getItem("devguard_recent_audits");
+      if (!existingJson) return;
+      let sessions: SavedAuditSession[] = JSON.parse(existingJson);
+      const sessionIndex = sessions.findIndex((s) => s.id === sessionId);
+      if (sessionIndex !== -1) {
+        sessions[sessionIndex].chatMessages = updatedMessages;
+        localStorage.setItem("devguard_recent_audits", JSON.stringify(sessions));
+        setRecentAudits(sessions);
+      }
+    } catch (err) {
+      console.warn("Failed to update chat in localStorage:", err);
+    }
+  };
+
+  // Load a session from history
+  const loadAuditSession = (session: SavedAuditSession) => {
+    setCode(session.code);
+    setIsDiff(session.isDiff);
+
+    const matchedSample = SAMPLE_CODES.find((s) => s.content.trim() === session.code.trim());
+    if (matchedSample) {
+      setSelectedSampleId(matchedSample.id);
+    } else {
+      setSelectedSampleId("");
+    }
+
+    setReport(session.report);
+    setChatMessages(session.chatMessages);
+    setLoadedSessionId(session.id);
+
+    // Auto expand some issues
+    const initialExpanded: Record<number, boolean> = {};
+    session.report.issues.forEach((_, idx) => {
+      if (idx < 2) initialExpanded[idx] = true;
+    });
+    setExpandedIssues(initialExpanded);
+
+    setChatOpen(session.chatMessages.length > 0);
+    setSidebarOpen(false);
+    showToast(`Loaded cached session for "${session.title}"`);
+  };
+
+  // Delete a session from history
+  const deleteAuditSession = (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const existingJson = localStorage.getItem("devguard_recent_audits");
+      if (!existingJson) return;
+      let sessions: SavedAuditSession[] = JSON.parse(existingJson);
+      sessions = sessions.filter((s) => s.id !== sessionId);
+      localStorage.setItem("devguard_recent_audits", JSON.stringify(sessions));
+      setRecentAudits(sessions);
+      if (loadedSessionId === sessionId) {
+        setLoadedSessionId(null);
+      }
+      showToast("Audit session removed from cache.", "info");
+    } catch (err) {
+      console.warn("Failed to delete audit session:", err);
+    }
+  };
 
   // Auto scroll chat to bottom when new messages arrive
   useEffect(() => {
@@ -140,12 +299,14 @@ export default function App() {
       });
       setExpandedIssues(initialExpanded);
 
+      const generatedSessionId = Math.random().toString(36).substring(2, 9);
+      setLoadedSessionId(generatedSessionId);
+
       // Initialize chat with a welcome from DevGuard about this specific code
-      setChatMessages([
-        {
-          id: "welcome",
-          role: "model",
-          content: `Hello! I have completed my audit of your code. I graded your security at **${data.securityScore}/100**, performance at **${data.performanceScore}/100**, and quality at **${data.qualityScore}/100**.
+      const welcomeMsg: ChatMessage = {
+        id: "welcome",
+        role: "model",
+        content: `Hello! I have completed my audit of your code. I graded your security at **${data.securityScore}/100**, performance at **${data.performanceScore}/100**, and quality at **${data.qualityScore}/100**.
 
 I found **${data.issues.length} findings** that require attention, including **${data.issues.filter(i => i.severity === "CRITICAL" || i.severity === "HIGH").length} high-severity risks**. 
 
@@ -153,10 +314,15 @@ Feel free to ask me questions like:
 - *"How does the resource leak on the FileInputStream occur?"*
 - *"Can we rewrite this Spring controller to be safe under heavy multi-threaded loads?"*
 - *"Show me how to use Spring's NamedParameterJdbcTemplate to fix the SQL Injection."*`,
-          timestamp: new Date().toLocaleTimeString()
-        }
-      ]);
+        timestamp: new Date().toLocaleTimeString()
+      };
+
+      const initialChat = [welcomeMsg];
+      setChatMessages(initialChat);
       setChatOpen(true);
+
+      // Save to recent audits
+      saveAuditSession(code, isDiff, data, initialChat, generatedSessionId);
 
     } catch (err: any) {
       console.error(err);
@@ -185,7 +351,11 @@ Feel free to ask me questions like:
       timestamp: new Date().toLocaleTimeString()
     };
 
-    setChatMessages(prev => [...prev, userMessage]);
+    const nextMessages = [...chatMessages, userMessage];
+    setChatMessages(nextMessages);
+    if (loadedSessionId) {
+      updateSavedSessionChat(loadedSessionId, nextMessages);
+    }
     setChatLoading(true);
 
     try {
@@ -209,21 +379,33 @@ Feel free to ask me questions like:
 
       const data = await response.json();
       
-      setChatMessages(prev => [...prev, {
+      const replyMessage: ChatMessage = {
         id: Math.random().toString(),
         role: "model",
         content: data.reply,
         timestamp: new Date().toLocaleTimeString()
-      }]);
+      };
+
+      const finalMessages = [...nextMessages, replyMessage];
+      setChatMessages(finalMessages);
+      if (loadedSessionId) {
+        updateSavedSessionChat(loadedSessionId, finalMessages);
+      }
 
     } catch (err: any) {
       console.error(err);
-      setChatMessages(prev => [...prev, {
+      const errorMessage: ChatMessage = {
         id: Math.random().toString(),
         role: "model",
         content: "🚨 **Error from DevGuard AI:** I encountered an issue processing your question. Please verify your GEMINI_API_KEY and server connectivity.",
         timestamp: new Date().toLocaleTimeString()
-      }]);
+      };
+
+      const finalErrMessages = [...nextMessages, errorMessage];
+      setChatMessages(finalErrMessages);
+      if (loadedSessionId) {
+        updateSavedSessionChat(loadedSessionId, finalErrMessages);
+      }
     } finally {
       setChatLoading(false);
     }
@@ -404,7 +586,7 @@ Feel free to ask me questions like:
                 id="sample-selector"
                 value={selectedSampleId}
                 onChange={(e) => handleSelectSample(e.target.value)}
-                className="w-full sm:w-64 bg-[#0c0c0d] border border-white/10 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 text-xs rounded-lg px-3 py-1.5 font-medium text-white/80 outline-none"
+                className="w-full sm:w-56 bg-[#0c0c0d] border border-white/10 focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 text-xs rounded-lg px-3 py-1.5 font-medium text-white/80 outline-none"
               >
                 {SAMPLE_CODES.map((s) => (
                   <option key={s.id} value={s.id}>
@@ -413,6 +595,15 @@ Feel free to ask me questions like:
                 ))}
               </select>
             </div>
+
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="flex items-center gap-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 hover:border-indigo-500/30 rounded-lg text-xs font-mono uppercase tracking-wider text-white/80 transition shrink-0"
+              title="Recent Audits"
+            >
+              <History className="w-3.5 h-3.5 text-indigo-400" />
+              <span>History ({recentAudits.length})</span>
+            </button>
           </div>
         </div>
       </header>
@@ -459,7 +650,12 @@ Feel free to ask me questions like:
                 <textarea
                   id="code-editor-area"
                   value={code}
-                  onChange={(e) => setCode(e.target.value)}
+                  onChange={(e) => {
+                    setCode(e.target.value);
+                    if (loadedSessionId) {
+                      setLoadedSessionId(null);
+                    }
+                  }}
                   placeholder="// Paste your Java source code or unified Git Diff format here..."
                   className="w-full h-[360px] lg:h-[480px] p-4 bg-transparent text-white/80 leading-relaxed outline-none resize-none overflow-y-auto whitespace-pre font-mono focus:ring-0 focus:border-transparent scroll-hide"
                   spellCheck="false"
@@ -1036,6 +1232,175 @@ Feel free to ask me questions like:
         </AnimatePresence>
       </div>
 
+      {/* Sidebar / Drawer for Recent Audits */}
+      <AnimatePresence>
+        {sidebarOpen && (
+          <>
+            {/* Backdrop */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.5 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSidebarOpen(false)}
+              className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
+            />
+            
+            {/* Sidebar panel */}
+            <motion.div
+              initial={{ x: "100%" }}
+              animate={{ x: 0 }}
+              exit={{ x: "100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              className="fixed top-0 right-0 bottom-0 w-full sm:w-[450px] bg-[#0c0c0d] border-l border-white/10 z-50 flex flex-col shadow-2xl overflow-hidden"
+              id="recent-audits-sidebar"
+            >
+              {/* Header */}
+              <div className="bg-[#050505] border-b border-white/5 p-4 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <History className="w-4 h-4 text-indigo-400" />
+                  <div>
+                    <h3 className="font-mono font-medium uppercase tracking-widest text-xs text-white/90">
+                      Recent Audit Cache
+                    </h3>
+                    <p className="text-[10px] text-white/40 font-mono">
+                      Last 5 sessions stored locally
+                    </p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setSidebarOpen(false)}
+                  className="text-white/60 hover:text-white text-[10px] uppercase font-mono tracking-wider px-2.5 py-1 bg-white/5 rounded-lg border border-white/10"
+                >
+                  Close
+                </button>
+              </div>
+
+              {/* Session list */}
+              <div className="flex-1 p-4 overflow-y-auto flex flex-col gap-3 scroll-hide">
+                {recentAudits.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-center px-6 gap-3">
+                    <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center border border-white/10">
+                      <History className="w-5 h-5 text-white/20" />
+                    </div>
+                    <p className="text-xs text-white/30 font-mono leading-relaxed max-w-xs">
+                      No historical audit sessions cached. Run code audits to automatically save reports and chats.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2.5">
+                    {recentAudits.map((session) => {
+                      const isLoaded = loadedSessionId === session.id;
+                      const hasCritical = session.report.issues.some(i => i.severity === "CRITICAL");
+                      const hasHigh = session.report.issues.some(i => i.severity === "HIGH");
+                      
+                      let badgeColor = "bg-emerald-500/10 text-emerald-400 border-emerald-500/20";
+                      let badgeLabel = "CLEAN";
+                      if (hasCritical) {
+                        badgeColor = "bg-red-500/10 text-red-400 border-red-500/20";
+                        badgeLabel = "CRITICAL";
+                      } else if (hasHigh) {
+                        badgeColor = "bg-orange-500/10 text-orange-400 border-orange-500/20";
+                        badgeLabel = "HIGH RISK";
+                      } else if (session.report.issues.length > 0) {
+                        badgeColor = "bg-amber-500/10 text-amber-400 border-amber-500/20";
+                        badgeLabel = "ISSUES";
+                      }
+
+                      return (
+                        <div
+                          key={session.id}
+                          onClick={() => loadAuditSession(session)}
+                          className={`p-3.5 rounded-xl border transition text-left cursor-pointer flex flex-col gap-2.5 ${
+                            isLoaded
+                              ? "bg-indigo-500/5 border-indigo-500/40 shadow-lg shadow-indigo-500/5 hover:bg-indigo-500/10"
+                              : "bg-[#050505] border-white/5 hover:border-white/15 hover:bg-white/5"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              <h4 className="font-sans font-semibold text-xs text-white/95 truncate">
+                                {session.title}
+                              </h4>
+                              <p className="text-[10px] text-white/40 font-mono mt-0.5">
+                                {session.timestamp}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border ${badgeColor}`}>
+                                {badgeLabel}
+                              </span>
+                              <button
+                                onClick={(e) => deleteAuditSession(session.id, e)}
+                                title="Delete Session"
+                                className="p-1 hover:bg-white/5 text-white/30 hover:text-red-400 rounded transition"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Mini metrics bar */}
+                          <div className="grid grid-cols-3 gap-1.5 bg-[#0c0c0d]/80 rounded-lg p-2 border border-white/5 font-mono text-[10px]">
+                            <div className="flex flex-col items-center">
+                              <span className="text-white/30 text-[9px] uppercase tracking-wider">Sec</span>
+                              <span className={`font-semibold ${getScoreColor(session.report.securityScore)}`}>
+                                {session.report.securityScore}
+                              </span>
+                            </div>
+                            <div className="flex flex-col items-center border-x border-white/5">
+                              <span className="text-white/30 text-[9px] uppercase tracking-wider">Perf</span>
+                              <span className={`font-semibold ${getScoreColor(session.report.performanceScore)}`}>
+                                {session.report.performanceScore}
+                              </span>
+                            </div>
+                            <div className="flex flex-col items-center">
+                              <span className="text-white/30 text-[9px] uppercase tracking-wider">Qual</span>
+                              <span className={`font-semibold ${getScoreColor(session.report.qualityScore)}`}>
+                                {session.report.qualityScore}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Chat history summary */}
+                          {session.chatMessages.length > 1 && (
+                            <div className="flex items-center gap-1 text-[9px] text-indigo-400/80 font-mono bg-indigo-500/5 px-2 py-0.5 rounded border border-indigo-500/15 self-start">
+                              <MessageSquare className="w-3 h-3" />
+                              <span>{session.chatMessages.length - 1} follow-up Q&A messages saved</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Clear all footer */}
+              {recentAudits.length > 0 && (
+                <div className="p-4 bg-[#050505] border-t border-white/5">
+                  <button
+                    onClick={() => {
+                      if (confirm("Are you sure you want to clear your entire audit history cache?")) {
+                        try {
+                          localStorage.removeItem("devguard_recent_audits");
+                          setRecentAudits([]);
+                          setLoadedSessionId(null);
+                          showToast("Audit history cache cleared.", "info");
+                        } catch (err) {
+                          console.warn("Failed to clear local audits:", err);
+                        }
+                      }
+                    }}
+                    className="w-full py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 font-mono text-[10px] uppercase tracking-widest rounded-xl transition"
+                  >
+                    Clear History Cache
+                  </button>
+                </div>
+              )}
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

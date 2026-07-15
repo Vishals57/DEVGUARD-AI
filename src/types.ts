@@ -34,3 +34,14 @@ export interface SampleCode {
   isDiff: boolean;
   content: string;
 }
+
+export interface SavedAuditSession {
+  id: string;
+  timestamp: string;
+  title: string;
+  code: string;
+  isDiff: boolean;
+  report: AuditReport;
+  chatMessages: ChatMessage[];
+}
+
