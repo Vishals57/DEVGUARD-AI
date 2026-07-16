@@ -6,7 +6,7 @@
 
 This contains everything you need to run your app locally.
 
-View your app in AI Studio: [https://ai.studio/apps/41205671-24b3-4321-9fe6-380ed68598ab](https://devguard-ai.ai.studio/)
+View your app in AI Studio: https://ai.studio/apps/41205671-24b3-4321-9fe6-380ed68598ab
 
 ## Run Locally
 

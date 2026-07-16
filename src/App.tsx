@@ -25,11 +25,14 @@ import {
   MessageSquare,
   Lock,
   Cpu,
-  History
+  History,
+  Eye,
+  EyeOff
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { SAMPLE_CODES } from "./samples";
 import { AuditReport, Issue, ChatMessage, SavedAuditSession } from "./types";
+import { highlightCode } from "./utils/highlighter";
 
 export default function App() {
   // Editor State
@@ -58,6 +61,29 @@ export default function App() {
   const [chatInput, setChatInput] = useState<string>("");
   const [chatLoading, setChatLoading] = useState<boolean>(false);
   const chatBottomRef = useRef<HTMLDivElement>(null);
+
+  // Editor Scroll & Highlighting Refs
+  const [syntaxHighlightEnabled, setSyntaxHighlightEnabled] = useState<boolean>(true);
+  const editorTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const editorPreRef = useRef<HTMLPreElement>(null);
+
+  const handleEditorScroll = () => {
+    if (editorTextareaRef.current && editorPreRef.current) {
+      editorPreRef.current.scrollTop = editorTextareaRef.current.scrollTop;
+      editorPreRef.current.scrollLeft = editorTextareaRef.current.scrollLeft;
+    }
+  };
+
+  // Sync scroll positions when code content changes (e.g., typing, pasting, sample loaded)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (editorTextareaRef.current && editorPreRef.current) {
+        editorPreRef.current.scrollTop = editorTextareaRef.current.scrollTop;
+        editorPreRef.current.scrollLeft = editorTextareaRef.current.scrollLeft;
+      }
+    }, 10);
+    return () => clearTimeout(timer);
+  }, [code]);
 
   // Recent Audits State
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
@@ -624,6 +650,18 @@ Feel free to ask me questions like:
                 </div>
                 <div className="flex items-center gap-2">
                   <button
+                    onClick={() => setSyntaxHighlightEnabled(prev => !prev)}
+                    title={syntaxHighlightEnabled ? "Disable Syntax Highlighting" : "Enable Syntax Highlighting"}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-mono border transition ${
+                      syntaxHighlightEnabled
+                        ? "bg-indigo-500/10 text-indigo-400 border-indigo-500/20 hover:bg-indigo-500/20"
+                        : "bg-white/5 text-white/40 border-white/5 hover:bg-white/10 hover:text-white/80"
+                    }`}
+                  >
+                    {syntaxHighlightEnabled ? <Eye className="w-3.5 h-3.5 text-indigo-400" /> : <EyeOff className="w-3.5 h-3.5" />}
+                    <span>{syntaxHighlightEnabled ? "Syntax On" : "Syntax Off"}</span>
+                  </button>
+                  <button
                     onClick={copyEditorCode}
                     title="Copy Code"
                     className="p-1.5 hover:bg-white/5 text-white/40 hover:text-white rounded transition"
@@ -640,26 +678,52 @@ Feel free to ask me questions like:
                 </div>
               </div>
 
-              {/* Editor TextArea with Line numbers */}
+              {/* Editor TextArea with Line numbers and Syntax Highlighting */}
               <div className="relative border border-white/5 rounded-xl overflow-hidden bg-[#050505] font-mono text-xs flex">
                 <div className="select-none bg-[#080809]/60 border-r border-white/5 text-white/20 px-2.5 py-4 text-right leading-relaxed flex flex-col text-[11px] min-w-[32px]">
                   {Array.from({ length: Math.max(1, code.split("\n").length) }).map((_, i) => (
                     <span key={i}>{i + 1}</span>
                   ))}
                 </div>
-                <textarea
-                  id="code-editor-area"
-                  value={code}
-                  onChange={(e) => {
-                    setCode(e.target.value);
-                    if (loadedSessionId) {
-                      setLoadedSessionId(null);
-                    }
-                  }}
-                  placeholder="// Paste your Java source code or unified Git Diff format here..."
-                  className="w-full h-[360px] lg:h-[480px] p-4 bg-transparent text-white/80 leading-relaxed outline-none resize-none overflow-y-auto whitespace-pre font-mono focus:ring-0 focus:border-transparent scroll-hide"
-                  spellCheck="false"
-                />
+                
+                <div className="relative flex-1 h-[360px] lg:h-[480px] overflow-hidden">
+                  {/* Highlighter Backdrop */}
+                  {syntaxHighlightEnabled && (
+                    <pre
+                      ref={editorPreRef}
+                      className="absolute inset-0 p-4 margin-0 bg-transparent text-white/80 font-mono text-xs leading-relaxed whitespace-pre overflow-hidden pointer-events-none select-none scrollbar-none"
+                      style={{
+                        wordWrap: "normal",
+                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace"
+                      }}
+                      dangerouslySetInnerHTML={{
+                        __html: highlightCode(code, isDiff) + (code.endsWith("\n") ? "\n " : "")
+                      }}
+                    />
+                  )}
+
+                  {/* Editable Textarea (overlay) */}
+                  <textarea
+                    id="code-editor-area"
+                    ref={editorTextareaRef}
+                    value={code}
+                    onScroll={handleEditorScroll}
+                    onChange={(e) => {
+                      setCode(e.target.value);
+                      if (loadedSessionId) {
+                        setLoadedSessionId(null);
+                      }
+                    }}
+                    placeholder="// Paste your Java source code or unified Git Diff format here..."
+                    className={`absolute inset-0 w-full h-full p-4 bg-transparent font-mono text-xs leading-relaxed whitespace-pre overflow-y-auto overflow-x-auto outline-none resize-none focus:ring-0 focus:border-transparent scroll-hide ${
+                      syntaxHighlightEnabled ? "text-transparent caret-white" : "text-white/80"
+                    }`}
+                    style={{
+                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace"
+                    }}
+                    spellCheck="false"
+                  />
+                </div>
               </div>
 
               {/* Controls Grid */}
